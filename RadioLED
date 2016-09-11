@@ -1,0 +1,203 @@
+#include <FastLED.h>
+#include <SPI.h> 
+#include <nRF24L01.h>
+#include <RF24.h>
+#define NUM_LEDS 1
+#define LED_PIN 8
+#define SLEEPINESS 5
+#define DEEP_SLEEP 60
+#define LIGHT_SLEEP 1
+#define LISTEN_PERIOD 12
+#define PING_FREQ 1
+#define PING_ATTEMPTS 5
+
+CRGB leds[NUM_LEDS];
+unsigned int index[1] = {0};
+unsigned int instruction[1] = {0};
+int receivedPing[1] = {0};
+long sleepTimer = 0;
+unsigned long currentMillis;
+unsigned long previousMillis = 0;
+int received[1] = {0};
+unsigned int counter = 0;
+int offset = 0;
+int seed = 0;
+
+RF24 radio(9,10);
+
+const byte rxAddr[6] = "00001";
+
+void setup()
+{
+  Serial.begin(9600);
+  FastLED.addLeds<NEOPIXEL, LED_PIN>(leds, NUM_LEDS);
+  
+  radio.begin();
+  delay(100);
+  radio.setRetries(15, 15);
+  radio.setAutoAck(true);
+  radio.enableAckPayload();
+  radio.stopListening();
+  radio.powerDown();
+ 
+}
+
+void loop()
+{
+ // Sleep for random time up to 8 seconds
+ goToSleep(generateRandom(1,15));
+
+
+  // Attempt to ping and get colour
+  if(!pingDiscovery()){
+    Serial.println("No response");
+    listenForPing();
+  }
+
+
+}
+
+bool channelFree(){
+  radio.powerUp();
+  radio.startListening();
+  delayMicroseconds(100);
+  radio.stopListening();
+  radio.powerDown();
+  return !radio.testCarrier();
+}
+
+int generateRandom(int lower, int upper){
+  int seed = seedOut(31);
+  randomSeed(seed);
+  return random(lower,upper);
+}
+
+void listenForPing(){
+  Serial.println("Listening for ping");
+  int change = generateRandom(0,100);
+  Serial.print("Change? ");
+  Serial.println(change);
+  
+  if(change > 90){
+    index[0] += generateRandom(0,255);
+  }
+    
+  Serial.print("Chose: ");
+  Serial.println(index[0]);
+  
+  radio.powerUp();
+  radio.startListening();
+  radio.openReadingPipe(1,rxAddr);
+  radio.writeAckPayload(1,index,sizeof(int));
+
+  while(true){
+    if(radio.available()){
+      radio.read(&instruction,sizeof(received));
+      Serial.print("Received: ");
+      Serial.println(instruction[0]);
+      setLEDColour();
+      radio.stopListening();
+      radio.powerDown();
+      return;
+    }
+  }
+}
+
+
+bool pingDiscovery(){
+    Serial.println("Starting ping discovery");
+    radio.powerUp();
+    radio.stopListening();
+    radio.openWritingPipe(rxAddr);
+
+    for(int i=0;i<PING_ATTEMPTS;i++){
+      Serial.print("Ping   ");
+      if(radio.write(index,sizeof(int))){
+        Serial.println("Successful send!");
+        if(radio.isAckPayloadAvailable()){
+          radio.read(&instruction,sizeof(int));
+          setLEDColour();
+          return true;
+        }
+      }
+      delay(100);
+    }
+    radio.powerDown();
+    return false;
+}
+
+void setLEDColour(){
+    if(instruction[0] > index[0]){
+      for(int i=255;i>0;i--){
+        FastLED.showColor(CHSV(index[0] % 255,255,i));
+      }
+      
+      index[0] = instruction[0];
+      for(int i=0;i<255;i++){
+        FastLED.showColor(CHSV(index[0] % 255,255,i));
+      }
+  }
+}
+
+
+void goToSleep(int duration){
+  Serial.print("Sleeping for: ");
+  Serial.println(duration);
+  
+  for(int i=0;i<duration;i++){
+    sleep();
+    delay(generateRandom(0,1000));
+  }
+}
+
+void sleep(){
+  delay(1000);
+
+  /*
+  cbi(ADCSRA,ADEN); 
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+  WDTCR = 1<<WDIE | (SLEEP_TIME & 0x8)<<2 | 1<<WDE | (SLEEP_TIME & 0x7);
+  sleep_mode();
+  */
+}
+
+/*
+ISR(WDT_vect) {
+  
+    WDTCR = 1<<WDCE | 1<<WDE;
+    WDTCR = 0;
+    sbi(ADCSRA,ADEN);
+}
+*/
+
+unsigned int bitOut(void)
+{
+  static unsigned long firstTime=1, prev=0;
+  unsigned long bit1=0, bit0=0, x=0, port=0, limit=99;
+  if (firstTime)
+  {
+    firstTime=0;
+    prev=analogRead(port);
+  }
+  while (limit--)
+  {
+    x=analogRead(port);
+    bit1=(prev!=x?1:0);
+    prev=x;
+    x=analogRead(port);
+    bit0=(prev!=x?1:0);
+    prev=x;
+    if (bit1!=bit0)
+      break;
+  }
+  return bit1;
+}
+
+unsigned long seedOut(unsigned int noOfBits)
+{
+  // return value with 'noOfBits' random bits set
+  unsigned long seed=0;
+  for (int i=0;i<noOfBits;++i)
+    seed = (seed<<1) | bitOut();
+  return seed;
+}
